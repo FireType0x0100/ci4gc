@@ -1,11 +1,10 @@
 """
-condacolab
-Install Conda and friends on Google Colab, easily
+ci4gc
 
 Usage:
 
->>> import condacolab
->>> condacolab.install()
+>>> import ci4gc
+>>> ci4gc.install()
 
 For more details, check the docstrings for ``install_from_url()``.
 """
@@ -29,8 +28,7 @@ except ImportError:
     raise RuntimeError("This module must ONLY run as part of a Colab notebook!")
 
 
-__version__ = "0.1.12"
-__author__ = "Jaime Rodríguez-Guerra <jaimergp@users.noreply.github.com>"
+__version__ = "0.0.1"
 
 
 PREFIX = "/usr/local"
@@ -120,10 +118,10 @@ def install_from_url(
         text=True,
     )
     os.unlink(installer_fn)
-    with open("condacolab_install.log", "w") as f:
+    with open("ci4gc_install.log", "w") as f:
         f.write(task.stdout)
     assert task.returncode == 0, (
-        "💥💔💥 The installation failed! Logs are available at `/content/condacolab_install.log`."
+        "💥💔💥 The installation failed! Logs are available at `/content/ci4gc_install.log`."
     )
 
     print("📌 Adjusting configuration...")
