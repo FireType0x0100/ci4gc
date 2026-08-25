@@ -186,7 +186,7 @@ def install_miniforge(
     run_checks: bool = True,
 ) -> None:
     """
-    Install Miniforge 25.11.1, built for Python 3.12.
+    Install the latest version of Miniforge made for the current Python version.
 
     Miniforge consists of a Miniconda-like distribution optimized
     and preconfigured for conda-forge packages.
@@ -238,9 +238,9 @@ def install_miniconda(
     run_checks: bool = True,
 ) -> None:
     """
-    Install Miniconda 26.5.3-1 for Python 3.12.
+    Install the latest Miniconda version available for the current Python version.
 
-    Other compatible installers may be available at https://repo.anaconda.com/miniconda/.
+    Compatible installers may be available at https://repo.anaconda.com/miniconda/.
 
     Parameters
     ----------
@@ -281,10 +281,14 @@ def install_anaconda(
     run_checks: bool = True,
 ) -> None:
     """
-    Install Anaconda 2024.10-1, the latest version built
-    for Python 3.12 at the time of update.
+    **Unsupported**: Anaconda distribution installation support
+    has been removed as no efficient method of obtaining
+    such distribution suitable for a specific Python version has been found.
+    
+    Install the latest Anaconda version built
+    for the current Python version.
 
-    Other compatible installers may be available at https://repo.anaconda.com/archive/
+    Compatible installers may be available at https://repo.anaconda.com/archive/
 
     Parameters
     ----------
@@ -305,17 +309,17 @@ def install_anaconda(
         Change to False to ignore checks and always attempt
         to run the installation.
     """
-    installer_url = (
-        "https://repo.anaconda.com/archive/Anaconda3-2024.10-1-Linux-x86_64.sh"
-    )
-    checksum = "3ba0a298155c32fbfd80cbc238298560bf69a2df511783054adfc151b76d80d8"
     print(
         "Anaconda Distribution is subject to terms of service:",
         "https://anaconda.com/legal/terms/terms-of-service",
         file=sys.stderr,
     )
-    install_from_url(
-        installer_url, prefix=prefix, env=env, run_checks=run_checks, sha256=checksum
+    print(
+        "Anaconda distribution support has been deprecated. In the name of compatibility, Miniconda will be installed instead. Installing Miniconda...",
+        file=sys.stderr,
+    )
+    install_miniconda(
+        prefix=prefix, env=env, run_checks=run_checks
     )
 
 
