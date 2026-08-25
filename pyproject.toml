@@ -1,3 +1,11 @@
+[project]
+name = "ci4gc"
+version = "0.0.1"
+license = "MIT"
+homepage = "https://github.com/FireType0x0100/ci4gc"
+repository = "https://github.com/FireType0x0100/ci4gc"
+dependencies = ["bs4", "lxml"]
+
 [tool.poetry]
 name = "ci4gc"
 version = "0.0.1"

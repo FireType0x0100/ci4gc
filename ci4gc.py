@@ -11,13 +11,18 @@ For more details, check the docstrings for ``install_from_url()``.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
+import platform
+import re
 import sys
 import shutil
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from subprocess import run, PIPE, STDOUT
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
 from IPython import get_ipython
@@ -30,9 +35,10 @@ except ImportError:
 
 __version__ = "0.0.1"
 
-
 PREFIX = "/usr/local"
-TARGET_PYTHON = "3.12"
+
+MINICONDA_REPO_URL = "https://repo.anaconda.com/miniconda/"
+MINIFORGE_BUILD_REPO_URL = "https://github.com/conda-forge/miniforge"
 
 
 def _chunked_sha256(path: str | Path, chunksize: int = 1_048_576) -> str:
@@ -43,13 +49,14 @@ def _chunked_sha256(path: str | Path, chunksize: int = 1_048_576) -> str:
     return hasher.hexdigest()
 
 
-def _check_python() -> None:
-    colab_python = ".".join(map(str, sys.version_info[:2]))
-    assert colab_python == TARGET_PYTHON, (
-        f"💥💔💥 Colab's Python ({colab_python}) does not match expected version: {TARGET_PYTHON}. "
-        "Consider running a different Runtime Version to make them match. More information: "
-        "https://github.com/conda-incubator/condacolab/issues/79"
-    )
+def _get_python_version_info() -> tuple[int, int, int, str, int]:
+    # colab_python = ".".join(map(str, sys.version_info[:2]))
+    colab_python_info = sys.version_info
+    return colab_python_info
+
+
+def _check_git() -> None:
+    assert shutil.which("git"), "💥💔💥 Git was not found!"
 
 
 def install_from_url(
@@ -94,8 +101,6 @@ def install_from_url(
             return check(prefix)
         except AssertionError:
             pass  # just install
-
-    _check_python()
 
     t0 = datetime.now()
     print(f"⏬ Downloading {installer_url}...")
@@ -180,6 +185,105 @@ def install_from_url(
     get_ipython().kernel.do_shutdown(True)
 
 
+def _parse_miniforge_installer_url(python_version_info: tuple[int, int, int, str, int]) -> str:
+    _check_git()
+    
+    @contextlib.contextmanager
+    def browse_git_repository(repository_url):
+        previous_directory = os.getcwd()
+        git_repository_name = PurePosixPath(urlparse(repository_url).path).stem
+    
+        run(["git", "clone", repository_url])
+        os.chdir(git_repository_name)
+        
+        try:
+            yield
+        
+        finally:
+            os.chdir(previous_directory)
+            shutil.rmtree(git_repository_name)
+    
+    version_number = ""
+    
+    with browse_git_repository(MINIFORGE_BUILD_REPO_URL):
+        construct_yaml_path = Path("Miniforge3", "construct.yaml")
+        with open(construct_yaml_path, "r") as construct_yaml:
+            construct_yaml_lines = construct_yaml.readlines()
+        
+        python_specification_regex_string = r"^  - python ([0-9,.=<>*]+)$"
+        python_specification_regex = re.compile(python_specification_regex_string)
+        
+        yaml_match_checkpoints = [False, False]
+        
+        for line_number, line in enumerate(construct_yaml_lines, start=1):
+            if line.rstrip("\r\n") == "specs:":
+                yaml_match_checkpoints[0] = True
+                continue
+            if yaml_match_checkpoints[0]:
+                assert line.startswith("  - "), "💥💔💥 Invalid specification data in `Miniforge3/construct.yaml`!"
+                if python_specification_regex.match(line):
+                    yaml_match_checkpoints[1] = True
+                    break
+        
+        assert yaml_match_checkpoints[0] and yaml_match_checkpoints[1], "💥💔💥 No Python version specification found in `Miniforge3/construct.yaml`!"
+        
+        result = run(["git", "log", "-L", f"{line_number},+1:{str(construct_yaml_path)}"], stdout=PIPE)
+        
+        git_output = result.stdout.decode("utf-8")
+        
+        git_commit_regex = re.compile(r"^commit ([0-9a-f]{40})$")
+        git_python_specification_regex_string = "^([-+])" + python_specification_regex_string[1:]
+        git_python_specification_regex = re.compile(git_python_specification_regex_string)
+        
+        git_python_context = ["", False, 0]
+        
+        for git_line in git_output.splitlines():
+            if commit_match := re.search(git_commit_regex, git_line):
+                git_python_context[0] = commit_match.group(1)
+                continue
+            
+            if specification_match := re.search(git_python_specification_regex, git_line):
+                if (
+                    specification_match.group(2).startswith(".".join(map(str, python_version_info[:2])))
+                    or specification_match.group(2).endswith(f"<{'.'.join(map(str, (python_version_info[0], python_version_info[1]+1)))}")
+                ):
+                    git_python_context[1] = True
+                    
+                    if specification_match.group(1) == "-":
+                        git_python_context[2] = -1
+                    elif specification_match.group(1) == "+":
+                        git_python_context[2] = 1
+                    
+                break
+                
+        assert git_python_context[0] and git_python_context[1] and git_python_context[2] != 0, (
+            "💥💔💥 The specification of the given Python version was not found in Miniforge logs!"
+        )
+                
+        if git_python_context[2] == 1:
+            tag_result = run(["git", "tag", "--contains", git_python_context[0], "--sort=-version:refname"], stdout=PIPE)
+            assert tag_result.stdout.splitlines() != [], "💥💔💥 No Miniforge version number was found containing given (newer) Python version!"
+            version_number = tag_result.stdout.splitlines()[0]
+        elif git_python_context[2] == -1:
+            tag_result = run(["git", "describe", "--tags", "--abbrev=0", f"{git_python_context[0]}^"], stdout=PIPE)
+            assert tag_result.stdout != "", "💥💔💥 No Miniforge version number was found containing given (older) Python version!"
+            version_number = tag_result.stdout.rstrip(b"\r\n")
+    
+    version_number = version_number.decode("utf-8") # The subprocess module returns 'bytes' objects in stdout
+    
+    assert version_number, "💥💔💥 No Miniforge version number was calculated!"
+    
+    machine_duplet = f"{platform.system()}-{platform.machine()}" # Python uses duplets, not triplets
+    installer_name = f"Miniforge3-{version_number}-{machine_duplet}.sh"
+    installer_url = f"{MINIFORGE_BUILD_REPO_URL}/{str(PurePosixPath('releases', 'download', version_number, installer_name))}"
+    
+    with urlopen(f"{installer_url}.sha256") as checksum_file:
+        installer_checksum = checksum_file.read().rstrip(b"\r\n").decode("utf-8").split()[0]
+    
+    installer_info = (installer_url, installer_checksum)
+    return installer_info
+
+
 def install_miniforge(
     prefix: str | Path = PREFIX,
     env: dict[str, str] | None = None,
@@ -210,11 +314,7 @@ def install_miniforge(
         Change to False to ignore checks and always attempt
         to run the installation.
     """
-    installer_url = (
-        "https://github.com/conda-forge/miniforge/releases/download/"
-        "25.11.0-1/Miniforge3-25.11.0-1-Linux-x86_64.sh"
-    )
-    checksum = "be1bad9d4e67a8753eb76fb4940e9a08036786675c7adf060627e55791bf110d"
+    installer_url, checksum = _parse_miniforge_installer_url(_get_python_version_info())
     install_from_url(
         installer_url, prefix=prefix, env=env, run_checks=run_checks, sha256=checksum
     )
@@ -230,6 +330,39 @@ def install_mambaforge(*args, **kwargs):
         file=sys.stderr,
     )
     install_miniforge(*args, **kwargs)
+
+
+def _parse_miniconda_installer_url(python_version_info: tuple[int, int, int, str, int]) -> tuple[str, str]:
+    pypi_notation_python_version = f"py{''.join(map(str, python_version_info[:2]))}"
+    machine_duplet = f"{platform.system()}-{platform.machine()}" # Python uses duplets, not triplets
+    installer_regex_string = f"^Miniconda3-{pypi_notation_python_version}_\\d+\\.\\d+\\.\\d+(-\\d+)?-{machine_duplet}\\.sh$"
+    installer_regex = re.compile(installer_regex_string)
+    installer_info = None
+    
+    with urlopen(MINICONDA_REPO_URL) as page:
+        parsed_soup = BeautifulSoup(page, "lxml")
+        
+        download_table = parsed_soup.select_one("table", recursive=False)
+        
+        for download_entry in download_table.find_all("tr", recursive=False):
+            download_entry_array = download_entry.find_all("td", recursive=False)
+            
+            if len(download_entry_array) != 4:
+                continue
+            
+            installer_name = download_entry_array[0].get_text()
+            
+            if not installer_regex.match(installer_name):
+                continue
+            
+            installer_checksum = download_entry_array[3].get_text()
+            installer_url = f"{MINICONDA_REPO_URL}/{installer_name}"
+            
+            installer_info = (installer_url, installer_checksum)
+            
+            break
+    
+    return installer_info
 
 
 def install_miniconda(
@@ -261,10 +394,7 @@ def install_miniconda(
         Change to False to ignore checks and always attempt
         to run the installation.
     """
-    installer_url = (
-        "https://repo.anaconda.com/miniconda/Miniconda3-py312_26.5.3-1-Linux-x86_64.sh"
-    )
-    checksum = "ecb43ee4ae30a7a5af87737e9548ceb21f0a10ec55b8dc40d247aa925b80bfec"
+    installer_url, checksum = _parse_miniconda_installer_url(_get_python_version_info())
     print(
         "Miniconda is subject to terms of service:",
         "https://anaconda.com/legal/terms/terms-of-service",
@@ -340,9 +470,6 @@ def check(prefix: str | Path = PREFIX, verbose: bool = True) -> None:
 
     pymaj, pymin = sys.version_info[:2]
     sitepackages = f"{prefix}/lib/python{pymaj}.{pymin}/site-packages"
-    assert f"{pymaj}.{pymin}" == TARGET_PYTHON, (
-        f"💥💔💥 Python version {pymaj}.{pymin} does not match expected value: {TARGET_PYTHON}"
-    )
     assert sitepackages in sys.path, (
         f"💥💔💥 PYTHONPATH was not patched! Value: {sys.path}"
     )
@@ -365,5 +492,4 @@ __all__ = [
     "install_anaconda",
     "check",
     "PREFIX",
-    "TARGET_PYTHON",
 ]
